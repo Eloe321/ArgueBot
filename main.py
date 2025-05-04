@@ -1,131 +1,115 @@
 import streamlit as st
-from openai import OpenAI
-import random
+import auth_functions
 
-# Set up the OpenAI client
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+from game_logic import WouldYouRatherGame
+from ai_handler import AIDebater
+from session_manager import SessionManager
 
-# List of "Would You Rather" questions
-would_you_rather_questions = [
-    {"option_a": "be able to fly", "option_b": "be able to read minds"},
-    {"option_a": "have unlimited money", "option_b": "have unlimited time"},
-    {"option_a": "be invisible", "option_b": "be super strong"},
-    {"option_a": "always be 10 minutes late", "option_b": "always be 20 minutes early"},
-    {"option_a": "live in the past", "option_b": "live in the future"},
-    {"option_a": "have a photographic memory", "option_b": "have an IQ of 200"},
-    {"option_a": "win the lottery", "option_b": "live twice as long"},
-    {"option_a": "speak all languages", "option_b": "be able to talk to animals"},
-    {"option_a": "never have to sleep", "option_b": "never have to eat"},
-    {"option_a": "be famous", "option_b": "be anonymous but rich"},
-]
 
-# Initialize session state variables
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-if "game_state" not in st.session_state:
-    st.session_state.game_state = "question"  # possible states: "question", "debate"
-
-if "current_question" not in st.session_state:
-    st.session_state.current_question = random.choice(would_you_rather_questions)
-
-if "user_choice" not in st.session_state:
-    st.session_state.user_choice = None
-
-if "opponent_choice" not in st.session_state:
-    st.session_state.opponent_choice = None
-
-if "rounds_played" not in st.session_state:
-    st.session_state.rounds_played = 0
-
-# Function to generate AI's debate response
-def generate_debate_response(user_choice, opponent_choice):
-    prompt = f"""
-    The user has chosen they would rather {user_choice} in a 'Would You Rather' game.
-    You should playfully and persuasively argue why {opponent_choice} would actually be the better choice.
-    Be creative, entertaining, and use humor while making compelling points about why their choice isn't as good as they think.
-    Keep your response concise (3-5 sentences).
-    """
-    
-    response = client.chat.completions.create(
-        model="gpt-3.5-turbo",
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=150
-    )
-    
-    return response.choices[0].message.content
-
-# Function to handle user's choice
-def handle_choice(choice, alternative):
+def handle_choice(ai_debater, choice, alternative):
     st.session_state.user_choice = choice
     st.session_state.opponent_choice = alternative
     st.session_state.game_state = "debate"
     
-    # Generate AI's debate response
-    ai_response = generate_debate_response(choice, alternative)
-    
-    # Add the debate to messages
+    ai_response = ai_debater.generate_debate_response(choice, alternative)
     st.session_state.messages.append({"role": "assistant", "content": ai_response})
 
-# Function to start a new round
-def new_round():
-    st.session_state.current_question = random.choice(would_you_rather_questions)
+def new_round(game):
+    st.session_state.current_question = game.get_random_question()
     st.session_state.game_state = "question"
     st.session_state.user_choice = None
     st.session_state.opponent_choice = None
     st.session_state.rounds_played += 1
 
-# App title
-st.title("Would You Rather: AI Debate Edition")
-st.write("Choose an option, and the AI will debate why the other option is better!")
+def main():
+    ## -------------------------------------------------------------------------------------------------
+    ## Not logged in -----------------------------------------------------------------------------------
+    ## -------------------------------------------------------------------------------------------------
+    if not auth_functions.check_session():
+        col1,col2,col3 = st.columns([1,2,1])
 
-# Display chat history
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+        # Authentication form layout
+        do_you_have_an_account = col2.selectbox(label='Do you have an account?',options=('Yes','No','I forgot my password'))
+        auth_form = col2.form(key='Authentication form',clear_on_submit=False)
+        email = auth_form.text_input(label='Email')
+        password = auth_form.text_input(label='Password',type='password') if do_you_have_an_account in {'Yes','No'} else auth_form.empty()
+        auth_notification = col2.empty()
 
-# Game logic
-if st.session_state.game_state == "question":
-    # Display the current "Would You Rather" question
-    st.write("## Would you rather...")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        if st.button(f"A: {st.session_state.current_question['option_a']}"):
-            handle_choice(
-                st.session_state.current_question['option_a'],
-                st.session_state.current_question['option_b']
-            )
-    
-    with col2:
-        if st.button(f"B: {st.session_state.current_question['option_b']}"):
-            handle_choice(
-                st.session_state.current_question['option_b'],
-                st.session_state.current_question['option_a']
-            )
+        # Sign In
+        if do_you_have_an_account == 'Yes' and auth_form.form_submit_button(label='Sign In',use_container_width=True,type='primary'):
+            with auth_notification, st.spinner('Signing in'):
+                auth_functions.sign_in(email,password)
 
-elif st.session_state.game_state == "debate":
-    # Process user's response to the AI's debate
-    if prompt := st.chat_input("Your response?"):
-        # Add user response to chat history
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        
-        # Move to next round
-        new_round()
-        
-        # Force a rerun to refresh the UI with the new game state
-        st.rerun()
+        # Create Account
+        elif do_you_have_an_account == 'No' and auth_form.form_submit_button(label='Create Account',use_container_width=True,type='primary'):
+            with auth_notification, st.spinner('Creating account'):
+                auth_functions.create_account(email,password)
 
-# Show score
-st.sidebar.write(f"Rounds played: {st.session_state.rounds_played}")
+        # Password Reset
+        elif do_you_have_an_account == 'I forgot my password' and auth_form.form_submit_button(label='Send Password Reset Email',use_container_width=True,type='primary'):
+            with auth_notification, st.spinner('Sending password reset link'):
+                auth_functions.reset_password(email)
 
-# Reset game button
-if st.sidebar.button("Reset Game"):
-    st.session_state.messages = []
-    st.session_state.game_state = "question"
-    st.session_state.current_question = random.choice(would_you_rather_questions)
-    st.session_state.rounds_played = 0
-    st.session_state.user_choice = None
-    st.session_state.opponent_choice = None
-    st.rerun()
+        # Authentication success and warning messages
+        if 'auth_success' in st.session_state:
+            auth_notification.success(st.session_state.auth_success)
+            del st.session_state.auth_success
+        elif 'auth_warning' in st.session_state:
+            auth_notification.warning(st.session_state.auth_warning)
+            del st.session_state.auth_warning
+
+    ## -------------------------------------------------------------------------------------------------
+    ## Logged in --------------------------------------------------------------------------------------
+    ## -------------------------------------------------------------------------------------------------
+    else:
+
+        # Initialize components
+        game = WouldYouRatherGame()
+        ai_debater = AIDebater()
+        SessionManager.initialize_session_state(game)
+
+        # App title
+        st.title("Would You Rather: AI Debate Edition")
+        st.write("Choose an option, and the AI will debate why the other option is better!")
+
+        # Display chat history
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+
+        # Game logic
+        if st.session_state.game_state == "question":
+            st.write("## Would you rather...")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if st.button(f"A: {st.session_state.current_question['option_a']}"):
+                    handle_choice(
+                        ai_debater,
+                        st.session_state.current_question['option_a'],
+                        st.session_state.current_question['option_b']
+                    )
+            
+            with col2:
+                if st.button(f"B: {st.session_state.current_question['option_b']}"):
+                    handle_choice(
+                        ai_debater,
+                        st.session_state.current_question['option_b'],
+                        st.session_state.current_question['option_a']
+                    )
+
+        elif st.session_state.game_state == "debate":
+            if prompt := st.chat_input("Your response?"):
+                st.session_state.messages.append({"role": "user", "content": prompt})
+                new_round(game)
+                st.rerun()
+
+        # Sidebar
+        st.sidebar.write(f"Rounds played: {st.session_state.rounds_played}")
+        if st.sidebar.button("Reset Game"):
+            SessionManager.reset_game(game)
+            st.rerun()
+
+if __name__ == "__main__":
+    main()
